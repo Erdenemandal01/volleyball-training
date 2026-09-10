@@ -1,0 +1,18 @@
+node_modules
+.next
+out
+# Нууц утга агуулсан файлууд — хэзээ ч git-д оруулахгүй
+.env
+.env.*
+!.env.example
+.pglite
+*.log
+coverage
+test-results
+playwright-report
+.DS_Store
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# Локал агент/редакторын тохиргоо
+.claude/
