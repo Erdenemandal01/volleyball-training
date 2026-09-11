@@ -54,7 +54,10 @@ function fingerprint(snapshot: GrantsSnapshot): string[] {
   const wanted = new Set<string>(TARGET_GRANTEES)
   const grants = snapshot.grants
     .filter((g) => wanted.has(g.grantee))
-    .map((g) => `G|${g.kind}|${g.object}|${g.grantee}|${g.privilege}|${g.grantable}`)
+    .map(
+      (g) =>
+        `G|${g.kind}|${g.object}${g.column ? `.${g.column}` : ''}|${g.grantee}|${g.privilege}|${g.grantable}`,
+    )
   const defaults = snapshot.defaultAcls
     .filter((d) => d.schema === 'public' && wanted.has(d.grantee))
     .map((d) => `D|${d.owner}|${d.objtype}|${d.grantee}|${d.privilege}`)
@@ -133,6 +136,47 @@ describe('Эрхийн буцаалт (rollback)', () => {
 
     const after = await collectGrants(db, '1970-01-01T00:00:00.000Z')
     expect(fingerprint(after)).toEqual(fingerprint(before))
+  })
+
+  /**
+   * Жинхэнэ PostgreSQL 17 дээр илэрсэн гурван согогийн регресс хамгаалалт.
+   * PGlite дээр эдгээр анх мэдэгдээгүй тул тусад нь бататгана.
+   */
+  it('Буцаалт: баганын түвшний GRANT сэргээгдэнэ', async () => {
+    // Хүснэгтийн түвшний REVOKE баганын GRANT-ыг ч авдаг тул буцаалтад заавал орно
+    expect(restoreSql).toMatch(/GRANT\s+SELECT\s*\("phone"\)\s+ON\s+TABLE\s+public\."users"/i)
+    const attacl = rows(
+      await db.execute(sql`
+        select a.attacl::text as acl
+        from pg_attribute a
+        join pg_class c on c.oid = a.attrelid
+        join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relname = 'users' and a.attname = 'phone'
+      `),
+    )[0]
+    expect(String(attacl.acl ?? '')).toContain('anon')
+  })
+
+  it('Буцаалт: schema-ийн GRANT сэргээгдэнэ (эзэн нь өөр дүр байсан ч)', async () => {
+    expect(restoreSql).toMatch(/GRANT\s+USAGE\s+ON\s+SCHEMA\s+public\s+TO\s+"anon"/i)
+    const usage = rows(
+      await db.execute(sql`select has_schema_privilege('anon','public','USAGE') as x`),
+    )[0].x
+    expect(usage).toBe(true)
+  })
+
+  it('Буцаалт: ажиллуулагч өөрчилж ЧАДАХГҮЙ эрхийг гүйцэтгэх мөр болгон бичихгүй', async () => {
+    // `ALTER DEFAULT PRIVILEGES FOR ROLE <гишүүн биш дүр>` нь бүх буцаалтыг
+    // "permission denied to change default privileges" гэж зогсоодог.
+    const executable = restoreSql
+      .split('\n')
+      .filter((l) => l.trim() && !l.trim().startsWith('--'))
+    const actAs = new Set(before.actAsRoles)
+    for (const line of executable) {
+      const m = /ALTER DEFAULT PRIVILEGES FOR ROLE "([^"]+)"/i.exec(line)
+      if (m) expect(actAs.has(m[1])).toBe(true)
+    }
+    expect(executable.some((l) => /ALTER DEFAULT PRIVILEGES/i.test(l))).toBe(true)
   })
 
   it('Буцаалт нь хамрахгүй grantee-г (service_role) өөрчлөхгүй', async () => {

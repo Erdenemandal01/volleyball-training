@@ -283,4 +283,77 @@ describe('public schema-ийн эрхийн хаалт (0002)', () => {
     await raw('reset role')
     expect(await tablePrivilege('anon', 'students', 'SELECT')).toBe(false)
   })
+
+  // ── Жинхэнэ PostgreSQL 17 дээр илэрсэн согогуудын регресс хамгаалалт ──────
+
+  it('PROCEDURE байхад migration УНАХГҮЙ (ON FUNCTION биш ON ROUTINE)', async () => {
+    // `REVOKE ... ON FUNCTION <процедур>` нь "is not a function" алдаа өгч БҮХ
+    // migration-ыг унагаадаг байсан. Жинхэнэ PG17 дээр давтан хэмжсэн.
+    await raw(`set role ${APP_OWNER}`)
+    await raw(`create procedure public.proc_check() language sql as 'select 1'`)
+    try {
+      await expect(applyLockdownMigration()).resolves.toBeUndefined()
+      const r = rows(
+        await db.execute(
+          sql`select has_function_privilege('anon','public.proc_check()','EXECUTE') as x`,
+        ),
+      )
+      expect(r[0].x).toBe(false)
+    } finally {
+      await raw('drop procedure public.proc_check()')
+      await raw('reset role')
+    }
+  })
+
+  it('ЧАДВАРГҮЙ дүрээр ажиллуулбал чимээгүй өнгөрөхгүй, алдаа өгнө', async () => {
+    // Хангалтгүй эрхтэй дүрээр ажиллуулбал бүх давталт хоосон эргэж
+    // "амжилттай" дуусах байсан — Drizzle үүнийг хэрэглэгдсэн гэж тэмдэглэнэ,
+    // гэтэл юу ч хаагдаагүй байна.
+    await raw(`do $$ begin
+      if not exists (select 1 from pg_roles where rolname = 'powerless') then
+        create role powerless nologin nosuperuser;
+      end if;
+    end $$;`)
+    // Өмнөх тестүүд аль хэдийн хаасан тул шалгах утга үлдээгүй байна —
+    // Supabase-ийн анхны байдлыг сэргээж байж утга төгөлдөр шалгана.
+    try {
+      await raw('set role powerless')
+      await expect(applyLockdownMigration()).rejects.toThrow(/хангалтгүй эрхтэй дүрээр/)
+    } finally {
+      await raw('reset role')
+    }
+  })
+
+  it('Гуравдагч дүрийн GRANT OPTION-оор үлдсэн эрхийг барина', async () => {
+    // REVOKE нь зөвхөн ӨӨРИЙН олгосон ACL бичлэгийг устгадаг. Гуравдагч дүр
+    // GRANT OPTION-той байж олгосон бол тэр бичлэг ЧИМЭЭГҮЙ үлддэг байсан —
+    // обьектыг бид эзэмшдэг тул PostgreSQL WARNING ч өгөхгүй.
+    await raw(`do $$ begin
+      if not exists (select 1 from pg_roles where rolname = 'mid_grantor') then
+        create role mid_grantor nologin nosuperuser;
+      end if;
+    end $$;`)
+    await raw(`set role ${APP_OWNER}`)
+    await raw('grant select on public.students to mid_grantor with grant option')
+    await raw('reset role')
+    await raw('set role mid_grantor')
+    await raw('grant select on public.students to anon')
+    await raw('reset role')
+    try {
+      await raw(`set role ${APP_OWNER}`)
+      await expect(applyLockdownMigration()).rejects.toThrow(/Хаалт бүрэн болсонгүй/)
+      await raw('reset role')
+    } finally {
+      await raw('set role mid_grantor')
+      await raw('revoke select on public.students from anon')
+      await raw('reset role')
+      await raw(`set role ${APP_OWNER}`)
+      await raw('revoke all on public.students from mid_grantor')
+      await raw('reset role')
+      // Тестийн дарааллаас үл хамааран цэвэр төлөвт үлдээнэ
+      await raw(`set role ${APP_OWNER}`)
+      await applyLockdownMigration()
+      await raw('reset role')
+    }
+  })
 })

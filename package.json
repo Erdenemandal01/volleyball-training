@@ -20,7 +20,12 @@
     "db:check": "tsx scripts/db-check.ts",
     "db:set-password": "tsx scripts/set-db-password.ts",
     "db:grants": "tsx scripts/db-grants.ts",
-    "db:snapshot": "tsx scripts/db-grants-snapshot.ts"
+    "db:snapshot": "tsx scripts/db-grants-snapshot.ts",
+    "testpg:provision": "tsx scripts/testpg-provision.ts",
+    "testpg:login": "tsx scripts/testpg-login-check.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "testpg:cluster": "tsx scripts/testpg-cluster.ts",
+    "testpg:verify": "tsx scripts/testpg-verify.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.2.17",

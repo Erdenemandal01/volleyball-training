@@ -19,3 +19,6 @@ tsconfig.tsbuildinfo
 
 # Эрхийн snapshot (дахин үүсгэгдэнэ; буцаах SQL нь commit хийгдэнэ)
 drizzle/rollback/*_grants_snapshot.json
+
+# Түр зуурын судалгааны скриптүүд
+scratch/

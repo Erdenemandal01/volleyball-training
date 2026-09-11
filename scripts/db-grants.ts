@@ -30,6 +30,11 @@ function aclHasPublic(acl: string): boolean {
   return /(^|,\s*)=/.test(acl)
 }
 
+/** Урт жагсаалтыг таслана (тайлан уншигдахуйц байлгах). */
+function truncate(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`
+}
+
 const problems: string[] = []
 const flag = (message: string) => {
   problems.push(message)
@@ -115,13 +120,29 @@ async function main() {
 
   /* ---------------- 2. Хүснэгтийн эрх ---------------- */
   console.log('\n  ── 2. Хүснэгтийн эрх ──')
+  // ЯАГААД information_schema БИШ вэ (жинхэнэ PostgreSQL 17 дээр хэмжсэн):
+  //   • `role_table_grants` нь зөвхөн АЖИЛЛУУЛЖ БУЙ дүрийн гишүүн байх
+  //     grantee-үүдийн эрхийг харуулдаг. Энэ нь зөвхөн `postgres` нь anon,
+  //     authenticated-ийн гишүүн учраас ажиллаж байсан. Тэр гишүүнчлэлийг
+  //     (аюулгүй байдлын үүднээс ч гэсэн) авбал аудит СОХОР болно.
+  //   • PostgreSQL 17-ийн MAINTAIN эрхийг тэр view ОРУУЛДАГГҮЙ — relacl-д
+  //     `arwdDxtm` (8 эрх) байхад тайланд 7 эрх харагдана.
+  // Тиймээс каталогоос `aclexplode`-оор шууд уншина.
   const tableGrants = rows(
     await db.execute(sql`
-      select grantee, count(distinct table_name)::int as tables,
-             string_agg(distinct privilege_type, ',' order by privilege_type) as privs
-      from information_schema.role_table_grants
-      where table_schema = 'public' and grantee in ('anon', 'authenticated', 'PUBLIC')
-      group by grantee order by grantee
+      select g.who as grantee,
+             count(distinct c.relname)::int as tables,
+             string_agg(distinct a.privilege_type, ',' order by a.privilege_type) as privs,
+             string_agg(distinct c.relname, ', ' order by c.relname) as names
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+      cross join lateral aclexplode(c.relacl) a
+      cross join lateral (
+        select case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end as who
+      ) g
+      where n.nspname = 'public' and c.relkind in ('r','v','m','f','p')
+        and g.who in ('anon', 'authenticated', 'PUBLIC')
+      group by g.who order by g.who
     `),
   )
   if (tableGrants.length === 0) {
@@ -130,26 +151,30 @@ async function main() {
     for (const g of tableGrants) {
       const mark = flag(`${g.grantee} нь ${g.tables} хүснэгтэд эрхтэй (${g.privs})`)
       console.log(`  ${mark} ${String(g.grantee).padEnd(16)} ${g.tables} хүснэгт · ${g.privs}`)
+      // Аль хүснэгт болохыг нэрлэнэ — тоо ганцаараа CI-д хангалтгүй
+      console.log(`      ${truncate(String(g.names), 150)}`)
     }
   }
 
   /* ---------------- 3. Баганы түвшний эрх ---------------- */
   console.log('\n  ── 3. Баганы түвшний эрх (хүснэгтийн эрхээс үл хамаарах) ──')
-  // Хүснэгтийн түвшний GRANT нь бүх багананд автоматаар тусдаг тул давхардлыг хасна.
+  // `information_schema.column_privileges` нь ХҮСНЭГТИЙН эрхийг багана бүрээр
+  // задалж харуулдаг тул жинхэнэ баганын GRANT-ыг нуудаг. `pg_attribute.attacl`
+  // нь зөвхөн ТОДОРХОЙ олгосон баганын ACL-ыг агуулна.
   const colGrants = rows(
     await db.execute(sql`
-      select cp.grantee, cp.table_name, cp.column_name, cp.privilege_type
-      from information_schema.column_privileges cp
-      where cp.table_schema = 'public'
-        and cp.grantee in ('anon', 'authenticated', 'PUBLIC')
-        and not exists (
-          select 1 from information_schema.role_table_grants tg
-          where tg.table_schema = cp.table_schema
-            and tg.table_name = cp.table_name
-            and tg.grantee = cp.grantee
-            and tg.privilege_type = cp.privilege_type
-        )
-      order by cp.grantee, cp.table_name, cp.column_name
+      select g.who as grantee, c.relname as table_name, att.attname as column_name,
+             a.privilege_type
+      from pg_attribute att
+      join pg_class c on c.oid = att.attrelid
+      join pg_namespace n on n.oid = c.relnamespace
+      cross join lateral aclexplode(att.attacl) a
+      cross join lateral (
+        select case when a.grantee = 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end as who
+      ) g
+      where n.nspname = 'public' and att.attnum > 0 and att.attacl is not null
+        and g.who in ('anon', 'authenticated', 'PUBLIC')
+      order by grantee, table_name, column_name
     `),
   )
   if (colGrants.length === 0) console.log('    ✓ байхгүй')
@@ -171,8 +196,13 @@ async function main() {
   if (seqs.length === 0) console.log('    public schema-д sequence байхгүй')
   else
     for (const s of seqs) {
-      const exposed = LOCKED_ROLES.some((r) => String(s.acl).includes(`${r}=`))
-      const mark = exposed ? flag(`${s.relname} sequence нээлттэй: ${s.acl}`) : ' '
+      // `aclHasPublic` ЗААВАЛ хэрэгтэй: PUBLIC-ийн ACL бичлэг нь `=U/эзэн` буюу
+      // grantee нэргүй эхэлдэг тул `LOCKED_ROLES` дэх substring шалгалт
+      // түүнийг ХЭЗЭЭ Ч олохгүй (5-р хэсэгтэй ижил дүрэм).
+      const acl = String(s.acl)
+      const exposed =
+        aclHasPublic(acl) || LOCKED_ROLES.some((r) => acl.includes(`${r}=`))
+      const mark = exposed ? flag(`${s.relname} sequence нээлттэй: ${acl}`) : ' '
       console.log(`  ${mark} ${String(s.relname).padEnd(28)} ${s.acl}`)
     }
 
@@ -234,7 +264,9 @@ async function main() {
   )
   for (const d of relevant) {
     const acl = String(d.acl)
-    const exposed = LOCKED_ROLES.some((r) => acl.includes(`${r}=`))
+    // PUBLIC-д олгодог дүрэм нь ирээдүйн обьект бүрийг нээлттэй болгоно —
+    // `aclHasPublic` байхгүй бол энэ дүрэм илрэхгүй өнгөрдөг байсан.
+    const exposed = aclHasPublic(acl) || LOCKED_ROLES.some((r) => acl.includes(`${r}=`))
     const mark = exposed
       ? flag(`${d.owner} дүрийн default privileges нь ${d.schema}/${d.objtype} дээр эрх өгсөөр байна`)
       : ' '
