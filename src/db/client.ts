@@ -65,7 +65,7 @@ export function isTransactionPooler(url: string): boolean {
 
 export function createPool(url?: string): pg.Pool {
   const resolved = resolveDbUrl(url)
-  return new pg.Pool({
+  const pool = new pg.Pool({
     connectionString: resolved,
     ssl: sslConfig(resolved),
     // Pooler-той ажиллахад холболтыг бага байлгана (serverless-д чухал)
@@ -74,6 +74,18 @@ export function createPool(url?: string): pg.Pool {
     connectionTimeoutMillis: 15_000,
     application_name: 'volleyball-training',
   })
+
+  // PostgreSQL-ийн NOTICE/WARNING (жишээ нь "no privileges could be revoked")
+  // анзаарагдалгүй өнгөрөхөөс сэргийлнэ — migration чимээгүй бүтэлгүйтэж болно.
+  pool.on('connect', (client) => {
+    client.on('notice', (notice) => {
+      if (notice.severity === 'WARNING' || notice.severity === 'ERROR') {
+        console.warn(`[postgres ${notice.severity}] ${notice.message}`)
+      }
+    })
+  })
+
+  return pool
 }
 
 export function createDb(url?: string): Db {

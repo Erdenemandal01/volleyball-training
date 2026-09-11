@@ -358,6 +358,54 @@ pg_restore --no-owner --no-privileges -d "postgresql://..." volleyball-YYYYMMDD.
 
 ---
 
+## 10b. Supabase Data API ба өгөгдлийн сангийн эрх
+
+Энэ апп Supabase-ийн **Data API (PostgREST) болон Supabase Auth-ыг ашигладаггүй**.
+Сервер нь `postgres://` холболтоор шууд PostgreSQL рүү хандаж, эрхийн бүх шалгалтыг
+аппын давхаргад хийдэг. Тиймээс:
+
+- `@supabase/*` сан суулгаагүй, `SUPABASE_URL` / `ANON_KEY` хэрэглэдэггүй.
+- Browser-т ямар ч өгөгдлийн сангийн түлхүүр очдоггүй.
+- Supabase Dashboard → **Data API → Enable Data API = Off** байхаар тохируулсан.
+
+### Яагаад нэмэлт migration хэрэгтэй байсан бэ
+
+Supabase анхдагчаар `public` schema-д үүсэх бүх хүснэгтэд PostgREST-ийн
+`anon` болон `authenticated` дүрүүдэд **бүрэн DML эрх** (SELECT/INSERT/UPDATE/
+DELETE/TRUNCATE) олгодог. Data API-г унтраасан ч эдгээр GRANT өгөгдлийн санд
+үлдсэн хэвээр байдаг — Data API дахин асвал тэр дороо нээлттэй болно.
+
+`drizzle/0002_lockdown_public_grants.sql` нь зөвхөн `public` schema дээр:
+
+- `anon`, `authenticated`-ийн бүх хүснэгт/sequence/функцийн эрхийг хураана;
+- тэдгээрт schema дээр шууд олгосон эрхийг хураана;
+- `postgres` дүрийн **default privileges**-ийг өөрчилж, ирээдүйд үүсэх хүснэгтэд
+  эрх автоматаар очихыг зогсооно;
+- `PUBLIC`-ээс обьектын эрх болон `CREATE` эрхийг хураана.
+
+Supabase-ийн системийн schema (`auth`, `storage`, `realtime`, `graphql`,
+`graphql_public`, `extensions`) болон extension-үүдийг **огт хөндөхгүй**.
+
+### Аппад нөлөөлөхгүй
+
+Апп `postgres` дүрээр холбогддог бөгөөд 18 хүснэгтийн **эзэмшигч** нь өөрөө.
+Эзэмшигчийн эрх GRANT-аар өгөгддөггүй тул REVOKE түүнд хамаарахгүй.
+
+```bash
+npm run db:grants     # одоогийн эрхийн байдлыг унших (юу ч өөрчлөхгүй)
+npm run db:migrate    # 0002-ийг production-д хэрэглэх
+npm run db:grants     # дараах байдлыг шалгах
+```
+
+### RLS-ийн тухай
+
+18 хүснэгтэд RLS **идэвхгүй** тул Supabase Dashboard дээр “UNRESTRICTED”
+гэж харагдана. Энэ апп Supabase Auth ашигладаггүй тул `auth.uid()`-д
+тулгуурласан policy бичих нь **утгагүй** — тиймээс зориуд нэмээгүй.
+Жинхэнэ хамгаалалт нь дээрх GRANT хураалт: PostgREST-ийн дүрүүдэд ямар ч
+обьектын эрх үлдэхгүй тул Data API дахин асаасан ч өгөгдөлд хүрэхгүй.
+
+---
 ## 11. Бизнес дүрмүүд
 
 **Оролтын эрх**
@@ -450,6 +498,7 @@ pg_restore --no-owner --no-privileges -d "postgresql://..." volleyball-YYYYMMDD.
 | `npm run db:generate` | Schema-аас шинэ migration үүсгэх |
 | `npm run db:set-password` | Supabase нууц үгийг .env-д URL-encode хийж бичих |
 | `npm run db:check` | Холболтыг шалгах (өгөгдөл өөрчлөхгүй) |
+| `npm run db:grants` | public schema-ийн эрхийн аудит (зөвхөн уншина) |
 | `npm run db:migrate` | Migration ажиллуулах |
 | `npm run db:seed` | Demo өгөгдөл (зөвхөн хөгжүүлэлт) |
 | `npm run db:reset -- --yes` | Өгөгдлийн санг цэвэрлэх (зөвхөн хөгжүүлэлт) |
