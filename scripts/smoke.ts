@@ -2,12 +2,19 @@
  * Ажиллаж буй серверийн эсрэг үндсэн урсгалын шалгалт (unit тестээс тусдаа).
  *
  *   npx tsx scripts/smoke.ts --base=http://localhost:3000 \
- *     --admin-email=... --admin-password=... --parent-phone=... --parent-code=...
+ *     --admin-email=... --parent-phone=...
+ *
+ * НУУЦ ҮГ: аргумент болгож бүү дамжуул — shell history (bash_history,
+ * PSReadLine), процессын жагсаалт (`ps`, Task Manager) болон CI-ийн лог дээр
+ * ил үлддэг. Аргумент өгөөгүй үед энэ скрипт терминалаас НУУЛТТАЙ асууна.
+ * Интерактив бус орчинд SMOKE_ADMIN_PASSWORD / SMOKE_PARENT_CODE орчны
+ * хувьсагчаар дамжуулна.
  *
  * Зөвхөн УНШИХ ба нэвтрэх шалгалт хийнэ — өгөгдөл өөрчлөхгүй.
  * Production дээр ажиллуулж болно.
  */
 import './env'
+import { canPromptSecret, promptSecret } from './lib/prompt-secret'
 
 function arg(name: string, fallback = ''): string {
   const found = process.argv.find((a) => a.startsWith(`--${name}=`))
@@ -39,6 +46,8 @@ async function call(jar: Jar, path: string, init: RequestInit = {}) {
 
 let passed = 0
 let failed = 0
+/** Шалгаж ЧАДААГҮЙ зүйлсийг амжилттай гэж тооцохгүй, тусад нь жагсаана. */
+const skipped: string[] = []
 
 function check(name: string, condition: boolean, detail = '') {
   if (condition) {
@@ -48,6 +57,33 @@ function check(name: string, condition: boolean, detail = '') {
     failed += 1
     console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ''}`)
   }
+}
+
+function skip(name: string, reason: string) {
+  skipped.push(`${name} (${reason})`)
+  console.log(`  • ШАЛГААГҮЙ: ${name} — ${reason}`)
+}
+
+/**
+ * Нууц утгыг олж авна. Командын аргументаар дамжуулахыг ЗОРИУД дэмжихгүй —
+ * оронд нь орчны хувьсагч, эсвэл терминалаас нуулттай асуулт.
+ */
+async function resolveSecret(
+  flag: string,
+  fromEnv: string | undefined,
+  gateValue: string,
+  label: string,
+): Promise<string> {
+  if (process.argv.some((a) => a.startsWith(`--${flag}=`))) {
+    console.log(
+      `  ! --${flag} аргументыг зориуд дэмжихээ больлоо (shell history-д ил үлддэг).\n` +
+        `    ${flag.toUpperCase().replace(/-/g, '_')} орчны хувьсагч эсвэл нуулттай асуултыг ашиглана уу.`,
+    )
+  }
+  if (fromEnv) return fromEnv
+  if (!gateValue) return ''
+  if (!canPromptSecret()) return ''
+  return (await promptSecret(label)).trim()
 }
 
 async function main() {
@@ -80,7 +116,12 @@ async function main() {
 
   // 3. Админ нэвтрэлт (сонголтоор)
   const adminEmail = arg('admin-email', process.env.SMOKE_ADMIN_EMAIL ?? '')
-  const adminPassword = arg('admin-password', process.env.SMOKE_ADMIN_PASSWORD ?? '')
+  const adminPassword = await resolveSecret(
+    'admin-password',
+    process.env.SMOKE_ADMIN_PASSWORD,
+    adminEmail,
+    '  Админы нууц үг (харагдахгүй): ',
+  )
   if (adminEmail && adminPassword) {
     const admin: Jar = { cookie: '' }
     const login = await call(admin, '/api/auth/login/admin', {
@@ -99,12 +140,20 @@ async function main() {
     const afterLogout = await call(admin, '/api/admin/students')
     check('Гарсны дараа хандалт хаагдана', afterLogout.status === 401, `status ${afterLogout.status}`)
   } else {
-    console.log('  • Админы шалгалт алгасав (--admin-email / --admin-password өгөөгүй)')
+    skip(
+      'Админаар АМЖИЛТТАЙ нэвтрэх',
+      adminEmail ? 'нууц үг оруулаагүй' : '--admin-email өгөөгүй',
+    )
   }
 
   // 4. Эцэг эхийн нэвтрэлт (сонголтоор)
   const parentPhone = arg('parent-phone', process.env.SMOKE_PARENT_PHONE ?? '')
-  const parentCode = arg('parent-code', process.env.SMOKE_PARENT_CODE ?? '')
+  const parentCode = await resolveSecret(
+    'parent-code',
+    process.env.SMOKE_PARENT_CODE,
+    parentPhone,
+    '  Эцэг эхийн нэвтрэх код (харагдахгүй): ',
+  )
   if (parentPhone && parentCode) {
     const parent: Jar = { cookie: '' }
     const login = await call(parent, '/api/auth/login/parent', {
@@ -126,10 +175,20 @@ async function main() {
     const foreign = await call(parent, '/parent?child=00000000-0000-0000-0000-000000000000')
     check('Танихгүй хүүхдийн ID 404 буцаана', foreign.status === 404, `status ${foreign.status}`)
   } else {
-    console.log('  • Эцэг эхийн шалгалт алгасав (--parent-phone / --parent-code өгөөгүй)')
+    skip(
+      'Эцэг эхээр АМЖИЛТТАЙ нэвтрэх',
+      parentPhone ? 'нэвтрэх код оруулаагүй' : '--parent-phone өгөөгүй',
+    )
   }
 
-  console.log(`\n  Дүн: ${passed} амжилттай, ${failed} амжилтгүй\n`)
+  console.log(
+    `\n  Дүн: ${passed} амжилттай, ${failed} амжилтгүй, ${skipped.length} шалгаагүй`,
+  )
+  if (skipped.length > 0) {
+    console.log('\n  Шалгаагүй зүйлсийг АМЖИЛТТАЙ гэж тооцохгүй:')
+    for (const item of skipped) console.log(`    · ${item}`)
+  }
+  console.log('')
   process.exit(failed > 0 ? 1 : 0)
 }
 

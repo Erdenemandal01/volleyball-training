@@ -237,13 +237,35 @@ npm run e2e
 ### Ажиллаж буй серверийн smoke шалгалт (өгөгдөл өөрчлөхгүй)
 
 ```bash
-npx tsx scripts/smoke.ts --base=https://tanai-domain.mn \
-  --admin-email=... --admin-password=... \
-  --parent-phone=... --parent-code=...
+npm run smoke -- --base=https://tanai-domain.mn --admin-email=... --parent-phone=...
 ```
 
 Нэвтрэлт, эрхийн хамгаалалт, ownership шалгалтыг **зөвхөн уншиж** шалгана — production
-дээр ажиллуулж болно (аргументыг өгөхгүй бол тухайн шалгалтыг алгасна).
+дээр ажиллуулж болно.
+
+> **Нууц үгийг аргумент болгож бүү дамжуул.** Shell history (bash_history, PSReadLine),
+> процессын жагсаалт (`ps`, Task Manager) болон CI-ийн лог дээр ил үлддэг. Скрипт
+> аргумент өгөөгүй үед терминалаас **нуулттай** асууна; интерактив бус орчинд
+> `SMOKE_ADMIN_PASSWORD` / `SMOKE_PARENT_CODE` орчны хувьсагчийг ашиглана.
+
+Итгэмжлэл өгөөгүй шалгалтыг **амжилттай гэж тооцохгүй** — тайланд `ШАЛГААГҮЙ` гэж
+тусад нь жагсаана.
+
+### Эрхийн migration-ыг ЖИНХЭНЭ PostgreSQL дээр шалгах
+
+PGlite бол WASM дээрх PostgreSQL — эрхийн зан төлөв, дүрийн систем, `pg_has_role`,
+PostgreSQL 17-ийн `MAINTAIN` эрх зэрэг нь жинхэнэ сервертэй бүрэн ижил байх
+баталгаагүй. Эрхийн өөрчлөлтийг тусдаа cluster дээр шалгана (Docker шаардахгүй):
+
+```bash
+npm run testpg:cluster -- up    # түр cluster (порт 55432, trust auth, тусдаа хавтас)
+npm run testpg:verify           # 22 шалгалт: хаалт, хамрах хүрээ, согогийн регресс
+npm run testpg:login            # ЖИНХЭНЭ админ/эцэг эхийн нэвтрэлт (санамсаргүй нууц үг)
+npm run testpg:cluster -- destroy
+```
+
+Энэ нь хэрэглэгчийн өөрийн PostgreSQL сервер (5432) -т **хүрэхгүй** — өөр порт, өөр
+өгөгдлийн хавтас ашиглана. `TESTPG_BIN` -ээр binary-ийн замыг заана.
 
 ---
 
@@ -318,8 +340,10 @@ npx tsx scripts/smoke.ts --base=https://tanai-domain.mn \
 Эсвэл автоматаар:
 
 ```bash
-npx tsx scripts/smoke.ts --base=https://tanai-domain.mn --admin-email=... --admin-password=...
+npm run smoke -- --base=https://tanai-domain.mn --admin-email=... --parent-phone=...
 ```
+
+Нууц үгийг терминалаас нуулттай асууна — аргумент болгож бүү дамжуул (§6).
 
 ---
 
@@ -355,6 +379,146 @@ pg_restore --no-owner --no-privileges -d "postgresql://..." volleyball-YYYYMMDD.
   `auth_sessions` хүснэгтийг цэвэрлэ).
 - `auth_sessions` дахь хугацаа дууссан мөрийг үе үе цэвэрлэж болно:
   `delete from auth_sessions where expires_at < now();`
+
+---
+
+## 10b. Supabase Data API ба өгөгдлийн сангийн эрх
+
+Энэ апп Supabase-ийн **Data API (PostgREST) болон Supabase Auth-ыг ашигладаггүй**.
+Сервер нь `postgres://` холболтоор шууд PostgreSQL рүү хандаж, эрхийн бүх шалгалтыг
+аппын давхаргад хийдэг: `@supabase/*` сан суулгаагүй, `SUPABASE_URL` / `ANON_KEY`
+хэрэглэдэггүй, browser-т ямар ч өгөгдлийн сангийн түлхүүр очдоггүй.
+
+### Хоёр тусдаа давхарга
+
+Эдгээрийг хооронд нь **хольж болохгүй**:
+
+| Давхарга | Юуг шийддэг | Хаанаас удирдана |
+| --- | --- | --- |
+| **Data API унтраалга** | PostgREST үйлчилгээ ажиллаж, HTTP-ээр нээлттэй эсэх | Supabase Dashboard → Data API |
+| **PostgreSQL GRANT/REVOKE** | Холбогдсон дүр юу хийж чадах | `drizzle/0002_lockdown_public_grants.sql` |
+
+Data API-г унтраасан ч `anon`/`authenticated` дүрүүдийн **GRANT өгөгдлийн санд
+үлддэг**. Эсрэгээрээ, эрхийг нь хураасны дараа Data API-г дахин асаавал PostgREST
+ажиллах боловч тэдгээр дүрд обьектын эрх байхгүй тул хүсэлт `permission denied`
+болно. **Data API-г асаах нь хураасан эрхийг өөрөө буцаахгүй** — хандалт сэргэхийн
+тулд хэн нэгэн (эсвэл ямар нэг хэрэгсэл) дахин `GRANT` ажиллуулах шаардлагатай.
+Supabase платформ ирээдүйд эрхийг автоматаар сэргээх эсэхийг энд **нотлоогүй** —
+тиймээс `db:grants --strict` -ийг тогтмол ажиллуулж хянахыг зөвлөж байна.
+
+### Migration-ы хамрах хүрээ
+
+`drizzle/0002_lockdown_public_grants.sql` нь:
+
+- зөвхөн `public` schema, зөвхөн **энэ дүрийн нэрээр хураах боломжтой** обьект
+  (`pg_has_role(current_user, relowner, 'USAGE')` — эзэмшигч нь өөрөө, эсвэл түүний
+  гишүүн байх дүр; `public`-ийн эзэн нь `pg_database_owner` тул энэ ялгаа чухал);
+- зөвхөн `anon`, `authenticated`, `PUBLIC` гэсэн гурван grantee;
+- бүх `ALTER DEFAULT PRIVILEGES` нь `IN SCHEMA public` — database-wide мөр үүсгэхгүй;
+- Supabase-ийн системийн schema, extension, платформын эзэмшдэг обьектыг хөндөхгүй.
+
+**Аппын хандалт яагаад хадгалагдах вэ:** `postgres` нь `grantees` жагсаалтад
+ОРООГҮЙ учраас — эзэмшил ӨӨРӨӨ хамгаалдаггүй. Жинхэнэ PostgreSQL 17 дээр хэмжсэн:
+`REVOKE ALL ON TABLE public.users FROM app_pg, service_role` хийхэд ACL `{}` болж,
+эзэмшигч хэвээр байсаар `select count(*) from public.users` → `permission denied`.
+Эзэмшил нь `GRANT/REVOKE/ALTER/DROP` хийх эрх өгдөг ч өгөгдөлд хандах эрх өгдөггүй.
+
+**Хамгаалалтууд (бүгд жинхэнэ PostgreSQL 17 дээр шалгасан):**
+
+- Хангалтгүй эрхтэй дүрээр ажиллуулбал `RAISE EXCEPTION` — өмнө нь чимээгүй
+  "амжилт" буцааж, Drizzle түүнийг хэрэглэгдсэн гэж тэмдэглэдэг байсан.
+- Гуравдагч дүр `GRANT OPTION`-оор олгосон эрх үлдвэл `RAISE EXCEPTION` — PostgreSQL
+  ийм тохиолдолд WARNING ч өгдөггүй (обьектыг бид эзэмшдэг учир).
+- Хамрах хүрээнээс гадуурх обьектод эрх үлдвэл `RAISE WARNING` (алдаа биш, мэдээлэл).
+- `REVOKE ... ON ROUTINE` (`ON FUNCTION` биш) — `public` дотор нэг ч `PROCEDURE`
+  байхад `ON FUNCTION` нь бүх migration-ыг унагаана.
+
+```bash
+npm run db:snapshot -- --direct   # одоогийн эрхийг хадгалж, буцаах SQL үүсгэх
+npm run db:grants -- --strict     # өмнөх байдал
+npm run db:migrate                # 0002-ыг хэрэглэх
+npm run db:grants -- --strict     # дараах байдал
+```
+
+### Буцаах арга
+
+`npm run db:snapshot` нь `drizzle/rollback/` дотор хоёр файл үүсгэнэ:
+
+- `*_grants_snapshot.json` — бүрэн ACL төлөв (git-д ороогүй, дахин үүсгэгдэнэ);
+- `*_grants_restore.sql` — **яг тэр эрхийг** сэргээх SQL.
+
+Буцаах SQL нь `aclexplode()`-оор уншсан бодит эрх бүрийг нэг бүрчлэн `GRANT`
+хийдэг — ерөнхий `GRANT ALL` / `ON ALL TABLES` ашигладаггүй, `service_role`-д
+хүрдэггүй. Мөн:
+
+- **баганын түвшний GRANT** (`pg_attribute.attacl`) -ыг ч сэргээнэ — хүснэгтийн
+  түвшний `REVOKE` нь тэдгээрийг хамт устгадаг;
+- эзэн нь өөр дүр байвал `SET ROLE`-оор шилжиж **grantor-ыг ч яг сэргээнэ**
+  (`public` schema-ийн GRANT-ууд `pg_database_owner`-оос ирдэг);
+- **ажиллуулагч өөрчилж чадахгүй** зүйлийг гүйцэтгэх мөр болгож бичихгүй, зөвхөн
+  тайлбараар бүртгэнэ. `ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin ...` нь
+  `permission denied to change default privileges` алдаа өгч бүх буцаалтыг
+  зогсоодог — эдгээрийг migration ч хөндөөгүй тул сэргээх шаардлагагүй.
+
+`tests/grants-rollback.test.ts` эдгээрийг шалгана; `npm run testpg:verify` нь
+жинхэнэ PostgreSQL дээр бүтэн мөчлөгийг давтана.
+
+### Энэ migration хаахгүй зүйлс
+
+1. **`service_role`** — PostgreSQL эрх нь бүрэн хэвээр, `rolbypassrls = true`.
+   Гурван өөр зүйлийг ялгах хэрэгтэй:
+   - *API түлхүүр хүчингүй болгох* (JWT secret солих) → `service_role`-ийн **JWT
+     түлхүүр** ажиллахаа болино. PostgreSQL эрхэд нөлөөлөхгүй.
+   - *DB эрх хураах* (`REVOKE ... FROM service_role`) → тухайн дүр өгөгдөлд хүрэхээ
+     болино. Энэ migration үүнийг **хийхгүй**.
+   - *RLS bypass* (`rolbypassrls`) → RLS идэвхжүүлсэн ч `service_role`-ыг
+     хязгаарлахгүй. Зөвхөн `ALTER ROLE ... NOBYPASSRLS` арилгана.
+2. **`supabase_admin`-ийн default privileges** — `postgres` түүнийг өөрчлөх эрхгүй.
+   Платформ `public`-д обьект үүсгэвэл `anon`/`authenticated` тэр обьектод эрх авна.
+   Энэ нь онолын биш: тестийн орчинд lockdown-ы дараа платформын дүрээр хүснэгт
+   үүсгэхэд `anon=arwdDxtm` болж, `set role anon; select ...` ажиллав.
+3. **Ирээдүйн функцийн далд `PUBLIC EXECUTE`** — обьект үүсэх үед PostgreSQL нь
+   дотоод `acldefault()` дээр `pg_default_acl`-ийн мөрийг **нэмж** нийлүүлдэг тул
+   `IN SCHEMA public` гэсэн мөр дотоод анхдагчийг **хасаж чаддаггүй**. Зөвхөн
+   database-wide (`defaclnamespace = 0`) мөр л орлуулна — тэр нь бүх schema-д
+   нөлөөлөх тул хамрах хүрээтэй зөрчилдөж, оруулаагүй. Одоогоор `public`-д функц
+   байхгүй. Нэмбэл `REVOKE EXECUTE ON ROUTINE ... FROM PUBLIC` хийнэ;
+   `db:grants --strict` илрүүлнэ (жинхэнэ PostgreSQL дээр шалгасан).
+4. **`PUBLIC`-ийн schema `USAGE`** — Supabase-ийн дотоод дүрүүдэд нөлөөлөхөөс
+   сэргийлж үлдээсэн. Обьектын эрхгүйгээр өгөгдөлд хандуулахгүй; тиймээс
+   `has_schema_privilege('anon', 'public', 'USAGE')` нь `true` хэвээр харагдана.
+5. **Нөөц давхарга байхгүй.** RLS 0/18, `pg_policy` хоосон. Тиймээс энэ GRANT
+   хаалт нь `anon`/`authenticated`-ийн эсрэг **цор ганц** хяналт. Нэг л дахин
+   `GRANT` хийгдвэл бүх хүснэгт шууд нээгдэнэ — иймд `npm run db:grants -- --strict`
+   -ийг тогтмол (жишээ нь CI-д өдөр тутам) ажиллуулах нь зөвлөмж биш, шаардлага.
+
+### RLS-ийн тухай
+
+18 хүснэгтэд RLS **идэвхгүй** тул Dashboard дээр "UNRESTRICTED" гэж харагдана.
+Энэ апп Supabase Auth ашигладаггүй тул `auth.uid()`-д тулгуурласан policy бичих нь
+утгагүй — **зориуд нэмээгүй**. RLS нь `service_role` болон `postgres`-ыг ч
+зогсоохгүй (хоёулаа `rolbypassrls = true`), тиймээс энэ архитектурт жинхэнэ
+хамгаалалт нь GRANT хураалт.
+
+### Жинхэнэ PostgreSQL дээрх шалгалт
+
+Эрхийн зан төлөв, дүрийн систем, `pg_has_role`, PostgreSQL 17-ийн `MAINTAIN` зэрэг
+нь **PGlite (WASM) дээр бүрэн давтагддаггүй**. Тиймээс эрхийн migration-ыг тусдаа,
+жинхэнэ PostgreSQL cluster дээр шалгана. Docker шаардахгүй — суусан PostgreSQL-ийн
+binary-г ашиглаж, өөр порт дээр түр cluster үүсгэнэ:
+
+```bash
+npm run testpg:cluster -- up      # тусгаарласан cluster (порт 55432, trust auth)
+npm run testpg:verify             # migration + хамрах хүрээ + согогийн регресс
+npm run testpg:login              # ЖИНХЭНЭ нэвтрэлт (админ ба эцэг эх)
+npm run testpg:cluster -- destroy # цэвэрлэх
+```
+
+`scripts/lib/pg-fixture.ts` нь production Supabase-ийн топологийг **хэмжиж** авсан
+байдлаар давтана: `public`-ийн эзэн `pg_database_owner`, GRANT-ын grantor нь мөн
+тэр, аппын дүр нь `anon`/`authenticated`/`service_role`-ийн гишүүн, платформын
+эзэмшдэг schema болон `public` доторх гадны хүснэгт, `supabase_admin`-ийн default
+privileges.
 
 ---
 
@@ -450,12 +614,19 @@ pg_restore --no-owner --no-privileges -d "postgresql://..." volleyball-YYYYMMDD.
 | `npm run db:generate` | Schema-аас шинэ migration үүсгэх |
 | `npm run db:set-password` | Supabase нууц үгийг .env-д URL-encode хийж бичих |
 | `npm run db:check` | Холболтыг шалгах (өгөгдөл өөрчлөхгүй) |
+| `npm run db:grants` | public schema-ийн эрхийн аудит (зөвхөн уншина) |
+| `npm run db:snapshot` | Эрхийн төлөвийг хадгалж, буцаах SQL үүсгэх (зөвхөн уншина) |
 | `npm run db:migrate` | Migration ажиллуулах |
 | `npm run db:seed` | Demo өгөгдөл (зөвхөн хөгжүүлэлт) |
 | `npm run db:reset -- --yes` | Өгөгдлийн санг цэвэрлэх (зөвхөн хөгжүүлэлт) |
 | `npm run create-admin` | Админ үүсгэх / нууц үг шинэчлэх |
 | `npm test` | Бизнес дүрмийн тест |
 | `npm run e2e` | Playwright E2E |
+| `npm run smoke` | Ажиллаж буй серверийн шалгалт (нууц үгийг нуулттай асууна) |
+| `npm run testpg:cluster -- up` | Тусгаарласан PostgreSQL 17 cluster асаах (Docker хэрэггүй) |
+| `npm run testpg:verify` | Эрхийн migration-ыг ЖИНХЭНЭ PostgreSQL дээр шалгах |
+| `npm run testpg:login` | Жинхэнэ PostgreSQL дээр админ/эцэг эхийн нэвтрэлт шалгах |
+| `npm run testpg:provision <нэр>` | Тестийн сан бэлтгэх (production топологийг дуурайна) |
 
 ---
 
