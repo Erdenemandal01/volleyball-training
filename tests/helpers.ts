@@ -14,7 +14,21 @@ import { todayInUb } from '@/lib/date'
 
 let migrated = false
 
+/**
+ * Unit тестүүд өгөгдөл үүсгэж, TRUNCATE хийдэг. Тиймээс зөвхөн тусгаарласан
+ * in-memory PostgreSQL дээр ажиллахыг баталгаажуулна (tests/setup.ts тохируулдаг).
+ */
+function assertIsolatedDatabase() {
+  const url = process.env.DATABASE_URL ?? ''
+  if (!url.startsWith('pglite://')) {
+    throw new Error(
+      `Тестүүд зөвхөн тусгаарласан PGlite сан дээр ажиллана. DATABASE_URL="${url.split('@').pop()}"`,
+    )
+  }
+}
+
 export async function setupDb() {
+  assertIsolatedDatabase()
   if (!migrated) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await migrate(db as any, { migrationsFolder: path.join(process.cwd(), 'drizzle') })

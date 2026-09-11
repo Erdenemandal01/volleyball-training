@@ -39,6 +39,8 @@ async function call(jar: Jar, path: string, init: RequestInit = {}) {
 
 let passed = 0
 let failed = 0
+/** Шалгаж ЧАДААГҮЙ зүйлсийг амжилттай гэж тооцохгүй, тусад нь жагсаана. */
+const skipped: string[] = []
 
 function check(name: string, condition: boolean, detail = '') {
   if (condition) {
@@ -48,6 +50,11 @@ function check(name: string, condition: boolean, detail = '') {
     failed += 1
     console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ''}`)
   }
+}
+
+function skip(name: string, reason: string) {
+  skipped.push(`${name} (${reason})`)
+  console.log(`  • ШАЛГААГҮЙ: ${name} — ${reason}`)
 }
 
 async function main() {
@@ -99,7 +106,7 @@ async function main() {
     const afterLogout = await call(admin, '/api/admin/students')
     check('Гарсны дараа хандалт хаагдана', afterLogout.status === 401, `status ${afterLogout.status}`)
   } else {
-    console.log('  • Админы шалгалт алгасав (--admin-email / --admin-password өгөөгүй)')
+    skip('Админаар АМЖИЛТТАЙ нэвтрэх', '--admin-email / --admin-password өгөөгүй')
   }
 
   // 4. Эцэг эхийн нэвтрэлт (сонголтоор)
@@ -126,10 +133,17 @@ async function main() {
     const foreign = await call(parent, '/parent?child=00000000-0000-0000-0000-000000000000')
     check('Танихгүй хүүхдийн ID 404 буцаана', foreign.status === 404, `status ${foreign.status}`)
   } else {
-    console.log('  • Эцэг эхийн шалгалт алгасав (--parent-phone / --parent-code өгөөгүй)')
+    skip('Эцэг эхээр АМЖИЛТТАЙ нэвтрэх', '--parent-phone / --parent-code өгөөгүй')
   }
 
-  console.log(`\n  Дүн: ${passed} амжилттай, ${failed} амжилтгүй\n`)
+  console.log(
+    `\n  Дүн: ${passed} амжилттай, ${failed} амжилтгүй, ${skipped.length} шалгаагүй`,
+  )
+  if (skipped.length > 0) {
+    console.log('\n  Шалгаагүй зүйлсийг АМЖИЛТТАЙ гэж тооцохгүй:')
+    for (const item of skipped) console.log(`    · ${item}`)
+  }
+  console.log('')
   process.exit(failed > 0 ? 1 : 0)
 }
 

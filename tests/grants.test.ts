@@ -219,7 +219,27 @@ describe('public schema-ийн эрхийн хаалт (0002)', () => {
     }
   })
 
-  it('Функцийн далд PUBLIC EXECUTE хаагдсан', async () => {
+  it('Хамрах хүрээ: database-wide default privileges мөр ҮҮСГЭХГҮЙ', async () => {
+    // Schema заагаагүй `ALTER DEFAULT PRIVILEGES` нь pg_default_acl-д
+    // defaclnamespace = 0 мөр үүсгэж, тухайн дүрийн БҮХ schema-д нөлөөлдөг.
+    // Энэ migration тийм мөр үүсгэхгүй байх ёстой.
+    const global = rows(
+      await db.execute(sql`
+        select pg_get_userbyid(defaclrole) as owner, defaclobjtype::text as objtype,
+               array_to_string(defaclacl, ', ') as acl
+        from pg_default_acl where defaclnamespace = 0
+      `),
+    )
+    expect(
+      global.filter((g) => g.owner === APP_OWNER),
+      `Аппын дүр database-wide default privileges үүсгэсэн: ${JSON.stringify(global)}`,
+    ).toHaveLength(0)
+  })
+
+  it('ТАЙЛБАРЛАСАН ЦООРХОЙ: ирээдүйн функц PUBLIC-д нээлттэй хэвээр', async () => {
+    // Далд PUBLIC EXECUTE-ийг урьдчилан хаах нь database-wide өөрчлөлт
+    // шаарддаг тул migration-д ЗОРИУД оруулаагүй. Үүнийг нуухын оронд
+    // баримтжуулж, db:grants --strict-аар илрүүлнэ.
     await raw(`set role ${APP_OWNER}`)
     await raw('create function public.fn_check() returns int language sql as $$ select 1 $$')
     await raw('reset role')
@@ -231,11 +251,11 @@ describe('public schema-ийн эрхийн хаалт (0002)', () => {
           where n.nspname = 'public' and p.proname = 'fn_check'
         `),
       )[0].acl
-      expect(acl).not.toBe('(default)')
+      expect(acl).toBe('(default)')
       const r = rows(
         await db.execute(sql`select has_function_privilege('anon','public.fn_check()','EXECUTE') as x`),
       )
-      expect(r[0].x, 'anon шинэ функцийг ажиллуулж чадаж байна').toBe(false)
+      expect(r[0].x).toBe(true)
     } finally {
       await raw('drop function public.fn_check()')
     }

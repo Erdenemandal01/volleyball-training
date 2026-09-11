@@ -362,50 +362,83 @@ pg_restore --no-owner --no-privileges -d "postgresql://..." volleyball-YYYYMMDD.
 
 Энэ апп Supabase-ийн **Data API (PostgREST) болон Supabase Auth-ыг ашигладаггүй**.
 Сервер нь `postgres://` холболтоор шууд PostgreSQL рүү хандаж, эрхийн бүх шалгалтыг
-аппын давхаргад хийдэг. Тиймээс:
+аппын давхаргад хийдэг: `@supabase/*` сан суулгаагүй, `SUPABASE_URL` / `ANON_KEY`
+хэрэглэдэггүй, browser-т ямар ч өгөгдлийн сангийн түлхүүр очдоггүй.
 
-- `@supabase/*` сан суулгаагүй, `SUPABASE_URL` / `ANON_KEY` хэрэглэдэггүй.
-- Browser-т ямар ч өгөгдлийн сангийн түлхүүр очдоггүй.
-- Supabase Dashboard → **Data API → Enable Data API = Off** байхаар тохируулсан.
+### Хоёр тусдаа давхарга
 
-### Яагаад нэмэлт migration хэрэгтэй байсан бэ
+Эдгээрийг хооронд нь **хольж болохгүй**:
 
-Supabase анхдагчаар `public` schema-д үүсэх бүх хүснэгтэд PostgREST-ийн
-`anon` болон `authenticated` дүрүүдэд **бүрэн DML эрх** (SELECT/INSERT/UPDATE/
-DELETE/TRUNCATE) олгодог. Data API-г унтраасан ч эдгээр GRANT өгөгдлийн санд
-үлдсэн хэвээр байдаг — Data API дахин асвал тэр дороо нээлттэй болно.
+| Давхарга | Юуг шийддэг | Хаанаас удирдана |
+| --- | --- | --- |
+| **Data API унтраалга** | PostgREST үйлчилгээ ажиллаж, HTTP-ээр нээлттэй эсэх | Supabase Dashboard → Data API |
+| **PostgreSQL GRANT/REVOKE** | Холбогдсон дүр юу хийж чадах | `drizzle/0002_lockdown_public_grants.sql` |
 
-`drizzle/0002_lockdown_public_grants.sql` нь зөвхөн `public` schema дээр:
+Data API-г унтраасан ч `anon`/`authenticated` дүрүүдийн **GRANT өгөгдлийн санд
+үлддэг**. Эсрэгээрээ, эрхийг нь хураасны дараа Data API-г дахин асаавал PostgREST
+ажиллах боловч тэдгээр дүрд обьектын эрх байхгүй тул хүсэлт `permission denied`
+болно. **Data API-г асаах нь хураасан эрхийг өөрөө буцаахгүй** — хандалт сэргэхийн
+тулд хэн нэгэн (эсвэл ямар нэг хэрэгсэл) дахин `GRANT` ажиллуулах шаардлагатай.
+Supabase платформ ирээдүйд эрхийг автоматаар сэргээх эсэхийг энд **нотлоогүй** —
+тиймээс `db:grants --strict` -ийг тогтмол ажиллуулж хянахыг зөвлөж байна.
 
-- `anon`, `authenticated`-ийн бүх хүснэгт/sequence/функцийн эрхийг хураана;
-- тэдгээрт schema дээр шууд олгосон эрхийг хураана;
-- `postgres` дүрийн **default privileges**-ийг өөрчилж, ирээдүйд үүсэх хүснэгтэд
-  эрх автоматаар очихыг зогсооно;
-- `PUBLIC`-ээс обьектын эрх болон `CREATE` эрхийг хураана.
+### Migration-ы хамрах хүрээ
 
-Supabase-ийн системийн schema (`auth`, `storage`, `realtime`, `graphql`,
-`graphql_public`, `extensions`) болон extension-үүдийг **огт хөндөхгүй**.
+`drizzle/0002_lockdown_public_grants.sql` нь:
 
-### Аппад нөлөөлөхгүй
-
-Апп `postgres` дүрээр холбогддог бөгөөд 18 хүснэгтийн **эзэмшигч** нь өөрөө.
-Эзэмшигчийн эрх GRANT-аар өгөгддөггүй тул REVOKE түүнд хамаарахгүй.
+- зөвхөн `public` schema, зөвхөн **энэ хэрэглэгчийн эзэмшдэг** обьект;
+- зөвхөн `anon`, `authenticated`, `PUBLIC` гэсэн гурван grantee;
+- бүх `ALTER DEFAULT PRIVILEGES` нь `IN SCHEMA public` — database-wide мөр үүсгэхгүй;
+- Supabase-ийн системийн schema, extension, платформын эзэмшдэг обьектыг хөндөхгүй.
 
 ```bash
-npm run db:grants     # одоогийн эрхийн байдлыг унших (юу ч өөрчлөхгүй)
-npm run db:migrate    # 0002-ийг production-д хэрэглэх
-npm run db:grants     # дараах байдлыг шалгах
+npm run db:snapshot -- --direct   # одоогийн эрхийг хадгалж, буцаах SQL үүсгэх
+npm run db:grants -- --strict     # өмнөх байдал
+npm run db:migrate                # 0002-ыг хэрэглэх
+npm run db:grants -- --strict     # дараах байдал
 ```
+
+### Буцаах арга
+
+`npm run db:snapshot` нь `drizzle/rollback/` дотор хоёр файл үүсгэнэ:
+
+- `*_grants_snapshot.json` — бүрэн ACL төлөв (git-д ороогүй, дахин үүсгэгдэнэ);
+- `*_grants_restore.sql` — **яг тэр эрхийг** сэргээх SQL.
+
+Буцаах SQL нь `aclexplode()`-оор уншсан бодит эрх бүрийг нэг бүрчлэн `GRANT`
+хийдэг — ерөнхий `GRANT ALL` / `ON ALL TABLES` ашигладаггүй, `service_role` -д
+хүрдэггүй. `tests/grants-rollback.test.ts` нь migration → буцаалт хийсний дараа
+эрхийн төлөв **яг өмнөх хэлбэртээ** эргэж ирж байгааг шалгадаг.
+
+### Энэ migration хаахгүй зүйлс
+
+1. **`service_role`** — PostgreSQL эрх нь бүрэн хэвээр, `rolbypassrls = true`.
+   Гурван өөр зүйлийг ялгах хэрэгтэй:
+   - *API түлхүүр хүчингүй болгох* (JWT secret солих) → `service_role` -ийн **JWT
+     түлхүүр** ажиллахаа болино. PostgreSQL эрхэд нөлөөлөхгүй.
+   - *DB эрх хураах* (`REVOKE ... FROM service_role`) → тухайн дүр өгөгдөлд хүрэхээ
+     болино. Энэ migration үүнийг **хийхгүй**.
+   - *RLS bypass* (`rolbypassrls`) → RLS идэвхжүүлсэн ч `service_role` -ыг
+     хязгаарлахгүй. Зөвхөн `ALTER ROLE ... NOBYPASSRLS` арилгана.
+2. **`supabase_admin`-ийн default privileges** — `postgres` түүнийг өөрчлөх эрхгүй.
+   Платформ `public`-д обьект үүсгэвэл `anon`/`authenticated` тэр обьектод эрх авна.
+3. **Ирээдүйн функцийн далд `PUBLIC EXECUTE`** — үүнийг урьдчилан хаах нь
+   database-wide өөрчлөлт шаарддаг тул зориуд оруулаагүй. Одоогоор `public`-д функц
+   байхгүй. Нэмбэл тухайн функц дээр нь `REVOKE EXECUTE ... FROM PUBLIC` хийнэ;
+   `db:grants --strict` илрүүлнэ.
+4. **`PUBLIC`-ийн schema `USAGE`** — Supabase-ийн дотоод дүрүүдэд нөлөөлөхөөс
+   сэргийлж үлдээсэн. Обьектын эрхгүйгээр өгөгдөлд хандуулахгүй; тиймээс
+   `has_schema_privilege('anon', 'public', 'USAGE')` нь `true` хэвээр харагдана.
 
 ### RLS-ийн тухай
 
-18 хүснэгтэд RLS **идэвхгүй** тул Supabase Dashboard дээр “UNRESTRICTED”
-гэж харагдана. Энэ апп Supabase Auth ашигладаггүй тул `auth.uid()`-д
-тулгуурласан policy бичих нь **утгагүй** — тиймээс зориуд нэмээгүй.
-Жинхэнэ хамгаалалт нь дээрх GRANT хураалт: PostgREST-ийн дүрүүдэд ямар ч
-обьектын эрх үлдэхгүй тул Data API дахин асаасан ч өгөгдөлд хүрэхгүй.
+18 хүснэгтэд RLS **идэвхгүй** тул Dashboard дээр "UNRESTRICTED" гэж харагдана.
+Энэ апп Supabase Auth ашигладаггүй тул `auth.uid()`-д тулгуурласан policy бичих нь
+утгагүй — **зориуд нэмээгүй**. RLS нь `service_role` -ыг ч зогсоохгүй
+(`rolbypassrls`), тиймээс энэ архитектурт жинхэнэ хамгаалалт нь GRANT хураалт.
 
 ---
+
 ## 11. Бизнес дүрмүүд
 
 **Оролтын эрх**
@@ -499,6 +532,7 @@ npm run db:grants     # дараах байдлыг шалгах
 | `npm run db:set-password` | Supabase нууц үгийг .env-д URL-encode хийж бичих |
 | `npm run db:check` | Холболтыг шалгах (өгөгдөл өөрчлөхгүй) |
 | `npm run db:grants` | public schema-ийн эрхийн аудит (зөвхөн уншина) |
+| `npm run db:snapshot` | Эрхийн төлөвийг хадгалж, буцаах SQL үүсгэх (зөвхөн уншина) |
 | `npm run db:migrate` | Migration ажиллуулах |
 | `npm run db:seed` | Demo өгөгдөл (зөвхөн хөгжүүлэлт) |
 | `npm run db:reset -- --yes` | Өгөгдлийн санг цэвэрлэх (зөвхөн хөгжүүлэлт) |

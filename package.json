@@ -19,7 +19,8 @@
     "e2e": "playwright test",
     "db:check": "tsx scripts/db-check.ts",
     "db:set-password": "tsx scripts/set-db-password.ts",
-    "db:grants": "tsx scripts/db-grants.ts"
+    "db:grants": "tsx scripts/db-grants.ts",
+    "db:snapshot": "tsx scripts/db-grants-snapshot.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.2.17",
